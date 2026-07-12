@@ -49,10 +49,10 @@ class CirJobTest {
     JdbcTemplate jdbc;
 
     void seed(UUID arrival, String msgId, int total, List<String> failures) {
-        jdbc.execute("CREATE TABLE IF NOT EXISTS tx_header (arrival_id UUID PRIMARY KEY,"
-                + " msg_id VARCHAR(35), initg_pty VARCHAR(35), tx_count INT)");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS validation_log (arrival_id UUID, sequence INT,"
-                + " outcome VARCHAR(32), UNIQUE (arrival_id, sequence))");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tx_header (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
+                + " arrival_id UUID UNIQUE, msg_id VARCHAR(35), initg_pty VARCHAR(35), tx_count INT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS validation_log (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
+                + " arrival_id UUID, sequence INT, outcome VARCHAR(32), UNIQUE (arrival_id, sequence))");
         jdbc.update("UPSERT INTO tx_header (arrival_id, msg_id, initg_pty, tx_count) VALUES (?,?,?,?)",
                 arrival, msgId, "FNBRF01", total);
         for (int i = 0; i < total; i++) {

@@ -10,6 +10,8 @@ repositories { mavenCentral(); mavenLocal() }
 dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-batch'
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+    implementation 'org.springframework.boot:spring-boot-starter-data-jdbc'
+    implementation 'za.co.fnb.dcre:dcre-platform-persistence:0.1.0'
     implementation 'org.liquibase:liquibase-core'
     implementation 'org.springframework.boot:spring-boot-liquibase'
     implementation 'za.co.fnb.dcre:dcre-platform-batch:0.1.0'
