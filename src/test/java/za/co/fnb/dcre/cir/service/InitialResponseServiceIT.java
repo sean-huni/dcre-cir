@@ -27,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * crashing with NoSuchElementException. R-41: BUSINESS_FILE_REJECTED arrivals
  * (ALL_OR_NOTHING policy) produce a FILE_REJECTED_BY_POLICY NACK with REJ detail.
  */
-@SpringBootTest(properties = {"spring.batch.job.enabled=false", "dcre.exchange-root=build/test-exchange"})
+@SpringBootTest(properties = {"spring.batch.job.enabled=false", "dcre.exchange-root=build/test-exchange",
+        "DCRE_EXCHANGE_ROOT=build/test-exchange"})
 class InitialResponseServiceIT {
 
     static final CockroachContainer CRDB =
@@ -56,9 +57,10 @@ class InitialResponseServiceIT {
                 + " arrival_id UUID UNIQUE, msg_id VARCHAR(35), initg_pty VARCHAR(35), tx_count INT)");
         jdbc.execute("CREATE TABLE IF NOT EXISTS validation_log (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
                 + " arrival_id UUID, sequence INT, outcome VARCHAR(32), UNIQUE (arrival_id, sequence))");
-        // fixed msg ids reused across runs: clear so StagedWrite writes, not no-ops
-        Files.deleteIfExists(Path.of("build/test-exchange/onhost-resp/FNBRF01_DCRERF2026071313500102_onhost-req_RESP.txt"));
-        Files.deleteIfExists(Path.of("build/test-exchange/onhost-resp/FNBRF01_DCRERF2026071313500103_onhost-req_RESP.txt"));
+        // fixed msg ids reused across runs: clear so StagedWrite writes, not no-ops.
+        // SCRUM-42: responses now land under the per-client <base>/onhost-resp/out tree.
+        Files.deleteIfExists(Path.of("build/test-exchange/fnbrf01/onhost-resp/out/FNBRF01_DCRERF2026071313500102_onhost-req_RESP.txt"));
+        Files.deleteIfExists(Path.of("build/test-exchange/fnbrf01/onhost-resp/out/FNBRF01_DCRERF2026071313500103_onhost-req_RESP.txt"));
     }
 
     @Test
@@ -82,22 +84,18 @@ class InitialResponseServiceIT {
     }
 
     @Test
-    void headerlessArrivalsWithoutParamsFallBackToPerArrivalIdentity() throws Exception {
-        // 1.x AGT launches without client.token/msg.id: identity must fall back
-        // to UNKNOWN + arrivalId so distinct arrivals never share a response file
-        UUID first = UUID.randomUUID();
-        UUID second = UUID.randomUUID();
+    void headerlessArrivalWithoutClientTokenFailsClosed() {
+        // SCRUM-42 / A-42 on the 2.0.1 fleet: with no header AND no client.token, the client
+        // falls back to "UNKNOWN", which has NO configured exchange dir. layout.resolve fails
+        // closed (throws) so the job fails rather than staging a NACK under a shared/wrong dir.
+        // AGT on the 2.0.1 fleet always passes client identity, so this is a config error, not a
+        // normal case; there is deliberately NO legacy global fallback dir.
+        UUID arrival = UUID.randomUUID();   // no tx_header row, no client.token param
 
-        var firstResult = service.respond(first, "onhost-req", "spine truncated", null, null, null);
-        var secondResult = service.respond(second, "onhost-req", "spine truncated", null, null, null);
-
-        assertTrue(firstResult.written());
-        assertTrue(secondResult.written(),
-                "second DISTINCT arrival must get its own response, not a StagedWrite no-op on the first's file");
-        assertEquals("NACK|UNKNOWN|" + first + "|0/0|spine truncated",
-                Files.readAllLines(firstResult.responseFile()).get(0));
-        assertEquals("NACK|UNKNOWN|" + second + "|0/0|spine truncated",
-                Files.readAllLines(secondResult.responseFile()).get(0));
+        var ex = assertThrows(IllegalArgumentException.class,
+                () -> service.respond(arrival, "onhost-req", "spine truncated", null, null, null));
+        assertTrue(ex.getMessage().contains("UNKNOWN"),
+                "unconfigured client must fail closed: " + ex.getMessage());
     }
 
     @Test
@@ -140,6 +138,9 @@ class InitialResponseServiceIT {
         assertEquals("FNBRF01_" + msgId + "_onhost-req_RESP.txt",
                 reqResult.responseFile().getFileName().toString(),
                 "documented target shape: <client>_<msgId>_<route>_RESP.txt");
+        assertEquals(Path.of("build/test-exchange/fnbrf01/onhost-resp/out"),
+                reqResult.responseFile().getParent(),
+                "SCRUM-42: response lands in the per-client <base>/onhost-resp/out dir");
         assertEquals("NACK|FNBRF01|" + msgId + "|0/2|FILE_REJECTED_BY_POLICY",
                 Files.readAllLines(reqResult.responseFile()).get(0));
     }

@@ -24,7 +24,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@SpringBootTest(properties = {"spring.batch.job.enabled=false", "dcre.exchange-root=build/test-exchange"})
+@SpringBootTest(properties = {"spring.batch.job.enabled=false", "dcre.exchange-root=build/test-exchange",
+        "DCRE_EXCHANGE_ROOT=build/test-exchange"})
 class CirJobTest {
 
     static final CockroachContainer CRDB =
@@ -124,10 +125,42 @@ class CirJobTest {
         assertEquals(ExitStatus.FAILED.getExitCode(), run.getExitStatus().getExitCode());
         assertFalse(run.getExecutionContext().containsKey("responseFile"),
                 "a failed launch must not advertise a response file");
-        Path respDir = Files.createDirectories(Path.of("build/test-exchange/onhost-resp"));
+        // SCRUM-42: responses land under the per-client <base>/onhost-resp/out tree
+        Path respDir = Files.createDirectories(Path.of("build/test-exchange/fnbrf01/onhost-resp/out"));
         try (var responses = Files.list(respDir)) {
             assertTrue(responses.noneMatch(p -> p.getFileName().toString().contains(msgId)),
                     "no response file may be staged without the route identity");
+        }
+    }
+
+    @Test
+    void launchWithUnconfiguredClientFailsClosedAndWritesNothing() throws Exception {
+        // SCRUM-42 / A-42: a headerless arrival with no client.token falls back to "UNKNOWN",
+        // which has no configured exchange dir. The layout fails closed so the JOB FAILS rather
+        // than staging a NACK under a shared/wrong dir (no legacy global fallback on 2.0.1).
+        UUID arrival = UUID.randomUUID();   // NO tx_header seeded and NO client.token param
+        jdbc.execute("CREATE TABLE IF NOT EXISTS tx_header (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
+                + " arrival_id UUID UNIQUE, msg_id VARCHAR(35), initg_pty VARCHAR(35), tx_count INT)");
+        jdbc.execute("CREATE TABLE IF NOT EXISTS validation_log (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
+                + " arrival_id UUID, sequence INT, outcome VARCHAR(32), UNIQUE (arrival_id, sequence))");
+
+        JobExecution run = jobOperator.start(cirJob, new JobParametersBuilder()
+                .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false)
+                .addString("fatal.reason", "no header persisted (A-42)", false)
+                .toJobParameters());
+
+        assertEquals(BatchStatus.FAILED, run.getStatus());
+        assertFalse(run.getExecutionContext().containsKey("responseFile"),
+                "a fail-closed launch must not advertise a response file");
+        // scope to THIS launch's unique arrivalId (the UNKNOWN fallback names the file
+        // UNKNOWN_<arrivalId>_...), so the assertion is immune to unrelated artifacts
+        Path root = Path.of("build/test-exchange");
+        if (Files.exists(root)) {
+            try (var walk = Files.walk(root)) {
+                assertTrue(walk.noneMatch(p -> p.getFileName().toString().contains(arrival.toString())),
+                        "no response file may be staged for an unconfigured (UNKNOWN) client");
+            }
         }
     }
 }

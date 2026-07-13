@@ -1,0 +1,17 @@
+# SCRUM-42 TEST layout: shadows the platform-batch classpath resource of the same name so
+# `spring.config.import: classpath:dcre-exchange-layout.yml` binds these values under test.
+# root -> build/test-exchange (per-client tree materialized there by ExchangeBootstrap); the CIR
+# initial response lands at <root>/<base>/onhost-resp/out/<client>_<msgId>_<route>_RESP.txt.
+# FNBRF01 is the client every CIR test uses; the three canonical fleet clients mirror production.
+# "UNKNOWN" is deliberately absent: the A-42 headerless/no-client.token fallback must fail closed
+# (no configured dir) rather than write a NACK to a shared/wrong directory (no legacy global dir).
+dcre:
+  exchange:
+    root: ${DCRE_EXCHANGE_ROOT:build/test-exchange}
+    clients:
+      "[FNBCC01]":
+        onhost-resp: { out: fnbcc01/onhost-resp/out, error: fnbcc01/onhost-resp/error, archive: fnbcc01/onhost-resp/archive }
+      "[FNBCC02]":
+        onhost-resp: { out: fnbcc02/onhost-resp/out, error: fnbcc02/onhost-resp/error, archive: fnbcc02/onhost-resp/archive }
+      "[FNBRF01]":
+        onhost-resp: { out: fnbrf01/onhost-resp/out, error: fnbrf01/onhost-resp/error, archive: fnbrf01/onhost-resp/archive }
