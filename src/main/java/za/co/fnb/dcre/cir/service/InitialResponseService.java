@@ -30,15 +30,22 @@ public class InitialResponseService {
     private final VerdictViewRepo verdicts;
     private final String exchangeRoot;
 
-    public InitialResponseService(TxHeaderViewRepo headers, VerdictViewRepo verdicts,
-                                  @Value("${dcre.exchange-root}") String exchangeRoot) {
+    public InitialResponseService(final TxHeaderViewRepo headers, final VerdictViewRepo verdicts,
+                                  @Value("${dcre.exchange-root}") final String exchangeRoot) {
         this.headers = headers;
         this.verdicts = verdicts;
         this.exchangeRoot = exchangeRoot;
     }
 
-    public Result respond(UUID arrivalId, String fatalReason, String clientToken, String msgId,
-                          String outcomeHint) throws IOException {
+    public Result respond(final UUID arrivalId, final String route, final String fatalReason,
+                          final String clientToken, final String msgId,
+                          final String outcomeHint) throws IOException {
+        if (!hasText(route)) {
+            // A-45: route is part of the arrival identity; a fallback token would
+            // re-create the (client, msgId) collision class, so fail the job instead
+            throw new IllegalStateException(
+                    "route.id job parameter missing: required for response identity (A-45)");
+        }
         Optional<TxHeaderView> maybeHeader = headers.findByArrivalId(arrivalId);
         if (maybeHeader.isEmpty()) {
             // A-42: CRR fataled before persisting the header; identity comes from AGT job
@@ -46,7 +53,7 @@ public class InitialResponseService {
             // name stays per-arrival unique and restart-stable (R-05 no-op semantics).
             String client = hasText(clientToken) ? clientToken : "UNKNOWN";
             String responseMsgId = hasText(msgId) ? msgId : arrivalId.toString();
-            return stage(client, responseMsgId, List.of("NACK|" + client + "|" + responseMsgId + "|0/0|"
+            return stage(client, responseMsgId, route, List.of("NACK|" + client + "|" + responseMsgId + "|0/0|"
                     + (fatalReason != null ? fatalReason : "NO_HEADER")));
         }
         TxHeaderView header = maybeHeader.get();
@@ -74,15 +81,19 @@ public class InitialResponseService {
                 lines.add("REJ|" + reject.getSequence() + "|" + reject.getOutcome());
             }
         }
-        return stage(client, headerMsgId, lines);
+        return stage(client, headerMsgId, route, lines);
     }
 
-    private static boolean hasText(String value) {
+    private static boolean hasText(final String value) {
         return value != null && !value.isBlank();
     }
 
-    private Result stage(String client, String msgId, List<String> lines) throws IOException {
-        Path target = Path.of(exchangeRoot, "onhost-resp", client + "_" + msgId + "_RESP.txt");
+    private Result stage(final String client, final String msgId, final String route,
+                         final List<String> lines) throws IOException {
+        // A-45: (client, msgId) repeats across routes as distinct arrivals; the route
+        // token keeps the R-05 idempotency key aligned with the full arrival identity
+        Path target = Path.of(exchangeRoot, "onhost-resp",
+                client + "_" + msgId + "_" + route + "_RESP.txt");
         boolean written = StagedWrite.write(target, lines);
         return new Result(target, written);
     }

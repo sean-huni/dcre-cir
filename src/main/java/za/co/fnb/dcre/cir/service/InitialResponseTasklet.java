@@ -15,15 +15,17 @@ public class InitialResponseTasklet implements Tasklet {
 
     private final InitialResponseService service;
 
-    public InitialResponseTasklet(InitialResponseService service) {
+    public InitialResponseTasklet(final InitialResponseService service) {
         this.service = service;
     }
 
     @Override
-    public RepeatStatus execute(StepContribution contribution, ChunkContext chunkContext) throws Exception {
+    public RepeatStatus execute(final StepContribution contribution, final ChunkContext chunkContext)
+            throws Exception {
         var params = chunkContext.getStepContext().getJobParameters();
         InitialResponseService.Result result = service.respond(
                 UUID.fromString((String) params.get("arrival.id")),
+                (String) params.get("route.id"),
                 (String) params.get("fatal.reason"),
                 (String) params.get("client.token"),
                 (String) params.get("msg.id"),

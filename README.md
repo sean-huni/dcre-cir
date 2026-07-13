@@ -10,10 +10,10 @@ Terminal per-file stage on the fork of both request DAGs: DC `CRR -> CTV -> fork
 
 One job `cirJob`, one tasklet step `responseStep`; 3-tier `InitialResponseTasklet -> InitialResponseService -> data/repo` (`TxHeaderViewRepo`, `VerdictViewRepo`, both read-only view models over tables CIR does not own, grants-based R-04/R-06).
 
-- Job parameters: `arrival.id` (identifying, UUID); `fatal.reason` (optional, forces a NACK).
+- Job parameters: `arrival.id` (identifying, UUID); `route.id` (non-identifying, REQUIRED: arrival route, part of the response identity, missing/blank fails the job, A-45); `fatal.reason` (optional, forces a NACK).
 - Happy path: `ACK|<client>|<msgId>|<accepted>/<total>|ACCEPTED_BY_DCRE` plus one `REJ|<seq>|<outcome>` line per non-PASS verdict, ordered by sequence. `client` = `tx_header.initg_pty`, counts from `tx_count`.
 - `fatal.reason` set, or zero verdict rows: single line `NACK|<client>|<msgId>|0/<total>|<reason>` (default reason `NO_VERDICTS`). ACK/NACK here means accepted/rejected by DCRE, never submitted-downstream (Fugu F11).
-- Target: `<exchange-root>/onhost-resp/<client>_<msgId>_RESP.txt` via `StagedWrite` (tmp + ATOMIC_MOVE, R-24 shape). An existing target is a completed prior emission: the rerun is a restart no-op (R-05), surfaced in the exit status message; the file path lands in the ExecutionContext as `responseFile`.
+- Target: `<exchange-root>/onhost-resp/<client>_<msgId>_<route>_RESP.txt` via `StagedWrite` (tmp + ATOMIC_MOVE, R-24 shape). An existing target is a completed prior emission: the rerun is a restart no-op (R-05), surfaced in the exit status message; the file path lands in the ExecutionContext as `responseFile`.
 - Outcome seam: on COMPLETED, a `JobExecutionListener` writes `BUSINESS_ACCEPTED` to `<exchange-root>/outcomes/<JOB_NAME>` (`OutcomeFileWriter`, R-33: AGT is the sole termination authority, absence is never success). `JOB_NAME` falls back to `local-<executionId>`.
 
 ## Database and batch metadata
@@ -51,8 +51,8 @@ One-shot batch process; the JVM exit code carries the Batch outcome (`ExitCodeMa
 
 ```bash
 ./gradlew build
-java -jar build/libs/dcre-cir-0.1.0.jar arrival.id=<uuid>            # ACK path
-java -jar build/libs/dcre-cir-0.1.0.jar arrival.id=<uuid> 'fatal.reason=<why>'  # NACK path
+java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req            # ACK path
+java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req 'fatal.reason=<why>'  # NACK path
 ```
 
 Container: `docker build -t dcre-cir:dev .` (eclipse-temurin:25-jre-alpine). In the cluster AGT launches the image as an ephemeral K8s Job with `JOB_NAME` and the identifying parameters; the JobRepository dedupes on them (restart-not-duplicate, R-16 family). Requires a reachable CockroachDB and the exchange directory (`dcre-infra` compose stack locally).

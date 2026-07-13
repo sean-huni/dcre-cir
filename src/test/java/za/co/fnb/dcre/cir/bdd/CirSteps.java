@@ -62,6 +62,7 @@ public class CirSteps {
     public void jobRuns() throws Exception {
         execution = jobOperator.start(cirJob, new JobParametersBuilder()
                 .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false)
                 .toJobParameters());
         assertEquals(BatchStatus.COMPLETED, execution.getStatus());
     }
@@ -70,6 +71,7 @@ public class CirSteps {
     public void jobRunsWithFatalReason(String reason) throws Exception {
         execution = jobOperator.start(cirJob, new JobParametersBuilder()
                 .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false)
                 .addString("fatal.reason", reason, false)
                 .toJobParameters());
         assertEquals(BatchStatus.COMPLETED, execution.getStatus());
@@ -82,6 +84,7 @@ public class CirSteps {
         // arrival exercises the StagedWrite restart no-op, not instance refusal
         execution = jobOperator.start(cirJob, new JobParametersBuilder()
                 .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false)
                 .addString("attempt", "2", true)
                 .toJobParameters());
         assertEquals(BatchStatus.COMPLETED, execution.getStatus());

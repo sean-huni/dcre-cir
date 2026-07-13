@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -55,14 +57,14 @@ class InitialResponseServiceIT {
         jdbc.execute("CREATE TABLE IF NOT EXISTS validation_log (id UUID DEFAULT gen_random_uuid() PRIMARY KEY,"
                 + " arrival_id UUID, sequence INT, outcome VARCHAR(32), UNIQUE (arrival_id, sequence))");
         // fixed msg ids reused across runs: clear so StagedWrite writes, not no-ops
-        Files.deleteIfExists(Path.of("build/test-exchange/onhost-resp/FNBRF01_DCRERF2026071313500102_RESP.txt"));
-        Files.deleteIfExists(Path.of("build/test-exchange/onhost-resp/FNBRF01_DCRERF2026071313500103_RESP.txt"));
+        Files.deleteIfExists(Path.of("build/test-exchange/onhost-resp/FNBRF01_DCRERF2026071313500102_onhost-req_RESP.txt"));
+        Files.deleteIfExists(Path.of("build/test-exchange/onhost-resp/FNBRF01_DCRERF2026071313500103_onhost-req_RESP.txt"));
     }
 
     @Test
     void headerlessArrivalStillProducesNack() throws Exception {
         UUID arrival = UUID.randomUUID();   // NO tx_header row seeded: the A-42 crash shape
-        var result = service.respond(arrival, "spine count 10 != declared 11",
+        var result = service.respond(arrival, "onhost-req", "spine count 10 != declared 11",
                 "FNBRF01", "DCRERF2026071313500102", null);
         assertTrue(result.written());
         List<String> lines = Files.readAllLines(result.responseFile());
@@ -72,7 +74,7 @@ class InitialResponseServiceIT {
     @Test
     void headerlessArrivalWithoutFatalReasonNacksWithNoHeaderLiteral() throws Exception {
         UUID arrival = UUID.randomUUID();   // no header, no fatal.reason param either
-        var result = service.respond(arrival, null, "FNBRF01", "DCRERF2026071313500103", null);
+        var result = service.respond(arrival, "onhost-req", null, "FNBRF01", "DCRERF2026071313500103", null);
         assertTrue(result.written());
         List<String> lines = Files.readAllLines(result.responseFile());
         assertEquals(1, lines.size());
@@ -86,8 +88,8 @@ class InitialResponseServiceIT {
         UUID first = UUID.randomUUID();
         UUID second = UUID.randomUUID();
 
-        var firstResult = service.respond(first, "spine truncated", null, null, null);
-        var secondResult = service.respond(second, "spine truncated", null, null, null);
+        var firstResult = service.respond(first, "onhost-req", "spine truncated", null, null, null);
+        var secondResult = service.respond(second, "onhost-req", "spine truncated", null, null, null);
 
         assertTrue(firstResult.written());
         assertTrue(secondResult.written(),
@@ -104,7 +106,7 @@ class InitialResponseServiceIT {
         String msgId = "DCRERFPOL" + arrival.toString().substring(0, 6);
         seed(arrival, msgId, 4, List.of("FAIL_ACCOUNT_NOT_FOUND", "PASS", "FAIL_DUPLICATE_TX", "PASS"));
 
-        var result = service.respond(arrival, null, "FNBRF01", msgId, "BUSINESS_FILE_REJECTED");
+        var result = service.respond(arrival, "onhost-req", null, "FNBRF01", msgId, "BUSINESS_FILE_REJECTED");
         assertTrue(result.written());
         List<String> lines = Files.readAllLines(result.responseFile());
         assertEquals("NACK|FNBRF01|" + msgId + "|0/4|FILE_REJECTED_BY_POLICY", lines.get(0));
@@ -114,12 +116,49 @@ class InitialResponseServiceIT {
     }
 
     @Test
+    void sameClientAndMsgIdOnDifferentRoutesGetDistinctResponses() throws Exception {
+        // A-45: (client, msgId) repeats across routes as DISTINCT arrivals. An endo-route
+        // ACK must never satisfy the onhost-req arrival's NACK as a restart no-op.
+        UUID endoArrival = UUID.randomUUID();
+        String msgId = "DCRERFA45" + endoArrival.toString().substring(0, 6);
+        seed(endoArrival, msgId, 2, List.of("PASS", "PASS"));
+        var endoResult = service.respond(endoArrival, "onhost-req-endo", null, "FNBRF01", msgId, null);
+        assertTrue(endoResult.written());
+        assertTrue(Files.readAllLines(endoResult.responseFile()).get(0).startsWith("ACK|"));
+
+        UUID reqArrival = UUID.randomUUID();
+        seed(reqArrival, msgId, 2, List.of("FAIL_DUPLICATE_TX", "PASS"));
+        var reqResult = service.respond(reqArrival, "onhost-req", null, "FNBRF01", msgId, "BUSINESS_FILE_REJECTED");
+
+        assertTrue(reqResult.written(),
+                "rejected onhost-req arrival must get its own NACK, not a stale-ACK no-op on the endo file");
+        assertNotEquals(endoResult.responseFile(), reqResult.responseFile(),
+                "distinct arrivals (different routes) must never share a response file");
+        assertEquals("NACK|FNBRF01|" + msgId + "|0/2|FILE_REJECTED_BY_POLICY",
+                Files.readAllLines(reqResult.responseFile()).get(0));
+    }
+
+    @Test
+    void missingRouteFailsClosed() {
+        // A-45 fail-closed: no fallback token, a missing route.id is a config error
+        UUID arrival = UUID.randomUUID();
+        var missing = assertThrows(IllegalStateException.class,
+                () -> service.respond(arrival, null, null, "FNBRF01", "DCRERFA45MISS", null));
+        assertEquals("route.id job parameter missing: required for response identity (A-45)",
+                missing.getMessage());
+        var blank = assertThrows(IllegalStateException.class,
+                () -> service.respond(arrival, "  ", null, "FNBRF01", "DCRERFA45MISS", null));
+        assertEquals("route.id job parameter missing: required for response identity (A-45)",
+                blank.getMessage());
+    }
+
+    @Test
     void acceptedArrivalKeepsExistingAckBehavior() throws Exception {
         UUID arrival = UUID.randomUUID();
         String msgId = "DCRERFACK" + arrival.toString().substring(0, 6);
         seed(arrival, msgId, 3, List.of("FAIL_EXCEEDS_MANDATE_CAP", "PASS", "PASS"));
 
-        var result = service.respond(arrival, null, "FNBRF01", msgId, "BUSINESS_PARTIAL");
+        var result = service.respond(arrival, "onhost-req", null, "FNBRF01", msgId, "BUSINESS_PARTIAL");
         assertTrue(result.written());
         List<String> lines = Files.readAllLines(result.responseFile());
         assertEquals("ACK|FNBRF01|" + msgId + "|2/3|ACCEPTED_BY_DCRE", lines.get(0));

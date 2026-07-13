@@ -69,7 +69,8 @@ class CirJobTest {
         seed(arrival, msgId, 5, List.of("FAIL_ACCOUNT_NOT_FOUND", "FAIL_EXCEEDS_MANDATE_CAP"));
 
         JobExecution run = jobOperator.start(cirJob, new JobParametersBuilder()
-                .addString("arrival.id", arrival.toString(), true).toJobParameters());
+                .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false).toJobParameters());
         assertEquals(BatchStatus.COMPLETED, run.getStatus());
 
         Path file = Path.of(run.getExecutionContext().getString("responseFile"));
@@ -82,6 +83,7 @@ class CirJobTest {
         Files.writeString(file, String.join("\n", lines)); // ensure content fixed
         JobExecution rerun = jobOperator.start(cirJob, new JobParametersBuilder()
                 .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false)
                 .addString("attempt", "2", true).toJobParameters());
         assertEquals(BatchStatus.COMPLETED, rerun.getStatus());
         assertEquals(lines, Files.readAllLines(file), "existing response is never overwritten (R-05)");
@@ -96,6 +98,7 @@ class CirJobTest {
 
         JobExecution run = jobOperator.start(cirJob, new JobParametersBuilder()
                 .addString("arrival.id", arrival.toString(), true)
+                .addString("route.id", "onhost-req", false)
                 .addString("fatal.reason", "V1 layout fails closed in production (A-2)", false)
                 .toJobParameters());
         assertEquals(BatchStatus.COMPLETED, run.getStatus());
