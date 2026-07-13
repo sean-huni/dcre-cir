@@ -18,5 +18,5 @@ spring:
     database-change-log-lock-table: cir_databasechangeloglock
 
 dcre:
-  exchange-root: ${DCRE_EXCHANGE_ROOT:../../infra/dcre-infra/exchange}
+  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../infra/dcre-infra/exchange}
   amount-scale: ${DCRE_AMOUNT_SCALE:2}
