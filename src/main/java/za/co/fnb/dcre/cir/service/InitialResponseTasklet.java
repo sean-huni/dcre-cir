@@ -24,7 +24,10 @@ public class InitialResponseTasklet implements Tasklet {
         var params = chunkContext.getStepContext().getJobParameters();
         InitialResponseService.Result result = service.respond(
                 UUID.fromString((String) params.get("arrival.id")),
-                (String) params.get("fatal.reason"));
+                (String) params.get("fatal.reason"),
+                (String) params.get("client.token"),
+                (String) params.get("msg.id"),
+                (String) params.get("outcome.hint"));
         chunkContext.getStepContext().getStepExecution().getJobExecution()
                 .getExecutionContext().putString("responseFile", result.responseFile().toString());
         if (!result.written()) {

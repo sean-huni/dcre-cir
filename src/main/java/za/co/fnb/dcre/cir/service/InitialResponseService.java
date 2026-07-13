@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -36,26 +37,43 @@ public class InitialResponseService {
         this.exchangeRoot = exchangeRoot;
     }
 
-    public Result respond(UUID arrivalId, String fatalReason) throws IOException {
-        TxHeaderView header = headers.findByArrivalId(arrivalId).orElseThrow();
+    public Result respond(UUID arrivalId, String fatalReason, String clientToken, String msgId,
+                          String outcomeHint) throws IOException {
+        Optional<TxHeaderView> maybeHeader = headers.findByArrivalId(arrivalId);
+        if (maybeHeader.isEmpty()) {
+            // A-42: CRR fataled before persisting the header; identity comes from AGT job params
+            return stage(clientToken, msgId, List.of("NACK|" + clientToken + "|" + msgId + "|0/0|"
+                    + (fatalReason != null ? fatalReason : "NO_HEADER")));
+        }
+        TxHeaderView header = maybeHeader.get();
         String client = header.getInitgPty().strip();
-        String msgId = header.getMsgId().strip();
+        String headerMsgId = header.getMsgId().strip();
         int total = header.getTxCount();
 
         List<VerdictView> rejects = verdicts.findByArrivalIdAndOutcomeNotOrderBySequence(arrivalId, "PASS");
         long verdictCount = verdicts.countByArrivalId(arrivalId);
 
         List<String> lines = new ArrayList<>();
-        if (fatalReason != null || verdictCount == 0) {
-            lines.add("NACK|" + client + "|" + msgId + "|0/" + total + "|"
+        if ("BUSINESS_FILE_REJECTED".equals(outcomeHint)) {
+            // R-41 ALL_OR_NOTHING: whole file refused by policy, itemized per non-PASS verdict
+            lines.add("NACK|" + client + "|" + headerMsgId + "|0/" + total + "|FILE_REJECTED_BY_POLICY");
+            for (VerdictView reject : rejects) {
+                lines.add("REJ|" + reject.getSequence() + "|" + reject.getOutcome());
+            }
+        } else if (fatalReason != null || verdictCount == 0) {
+            lines.add("NACK|" + client + "|" + headerMsgId + "|0/" + total + "|"
                     + (fatalReason != null ? fatalReason : "NO_VERDICTS"));
         } else {
             long accepted = total - rejects.size();
-            lines.add("ACK|" + client + "|" + msgId + "|" + accepted + "/" + total + "|ACCEPTED_BY_DCRE");
+            lines.add("ACK|" + client + "|" + headerMsgId + "|" + accepted + "/" + total + "|ACCEPTED_BY_DCRE");
             for (VerdictView reject : rejects) {
                 lines.add("REJ|" + reject.getSequence() + "|" + reject.getOutcome());
             }
         }
+        return stage(client, headerMsgId, lines);
+    }
+
+    private Result stage(String client, String msgId, List<String> lines) throws IOException {
         Path target = Path.of(exchangeRoot, "onhost-resp", client + "_" + msgId + "_RESP.txt");
         boolean written = StagedWrite.write(target, lines);
         return new Result(target, written);
