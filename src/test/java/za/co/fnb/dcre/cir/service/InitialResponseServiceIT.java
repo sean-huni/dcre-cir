@@ -134,22 +134,29 @@ class InitialResponseServiceIT {
                 "rejected onhost-req arrival must get its own NACK, not a stale-ACK no-op on the endo file");
         assertNotEquals(endoResult.responseFile(), reqResult.responseFile(),
                 "distinct arrivals (different routes) must never share a response file");
+        assertEquals("FNBRF01_" + msgId + "_onhost-req-endo_RESP.txt",
+                endoResult.responseFile().getFileName().toString(),
+                "documented target shape: <client>_<msgId>_<route>_RESP.txt");
+        assertEquals("FNBRF01_" + msgId + "_onhost-req_RESP.txt",
+                reqResult.responseFile().getFileName().toString(),
+                "documented target shape: <client>_<msgId>_<route>_RESP.txt");
         assertEquals("NACK|FNBRF01|" + msgId + "|0/2|FILE_REJECTED_BY_POLICY",
                 Files.readAllLines(reqResult.responseFile()).get(0));
     }
 
     @Test
-    void missingRouteFailsClosed() {
-        // A-45 fail-closed: no fallback token, a missing route.id is a config error
+    void missingOrInvalidRouteFailsClosed() {
+        // A-45 fail-closed: no fallback token, a missing route is a config error; the
+        // whitelist [a-z0-9-]+ also blocks tokens that would escape onhost-resp as a path
         UUID arrival = UUID.randomUUID();
-        var missing = assertThrows(IllegalStateException.class,
-                () -> service.respond(arrival, null, null, "FNBRF01", "DCRERFA45MISS", null));
-        assertEquals("route.id job parameter missing: required for response identity (A-45)",
-                missing.getMessage());
-        var blank = assertThrows(IllegalStateException.class,
-                () -> service.respond(arrival, "  ", null, "FNBRF01", "DCRERFA45MISS", null));
-        assertEquals("route.id job parameter missing: required for response identity (A-45)",
-                blank.getMessage());
+        for (String badRoute : new String[] {null, "  ", "../onhost-req", "onhost-req/../../etc",
+                "ONHOST-REQ", "onhost_req"}) {
+            var ex = assertThrows(IllegalArgumentException.class,
+                    () -> service.respond(arrival, badRoute, null, "FNBRF01", "DCRERFA45MISS", null),
+                    "route must be rejected: " + badRoute);
+            assertEquals("arrival route missing or invalid: required for response identity (A-45)",
+                    ex.getMessage());
+        }
     }
 
     @Test

@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Business tier (configuration.md point 21): composes the initial ACK/NACK
@@ -25,6 +26,9 @@ import java.util.UUID;
 public class InitialResponseService {
 
     public record Result(Path responseFile, boolean written) { }
+
+    // route tokens are hyphen-only lowercase constants (onhost-req, onhost-req-endo, fint-resp)
+    private static final Pattern ROUTE_TOKEN = Pattern.compile("[a-z0-9-]+");
 
     private final TxHeaderViewRepo headers;
     private final VerdictViewRepo verdicts;
@@ -40,11 +44,12 @@ public class InitialResponseService {
     public Result respond(final UUID arrivalId, final String route, final String fatalReason,
                           final String clientToken, final String msgId,
                           final String outcomeHint) throws IOException {
-        if (!hasText(route)) {
+        if (route == null || !ROUTE_TOKEN.matcher(route).matches()) {
             // A-45: route is part of the arrival identity; a fallback token would
-            // re-create the (client, msgId) collision class, so fail the job instead
-            throw new IllegalStateException(
-                    "route.id job parameter missing: required for response identity (A-45)");
+            // re-create the (client, msgId) collision class, so fail the job instead.
+            // The whitelist also keeps the token from escaping onhost-resp as a path.
+            throw new IllegalArgumentException(
+                    "arrival route missing or invalid: required for response identity (A-45)");
         }
         Optional<TxHeaderView> maybeHeader = headers.findByArrivalId(arrivalId);
         if (maybeHeader.isEmpty()) {

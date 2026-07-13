@@ -10,7 +10,7 @@ Terminal per-file stage on the fork of both request DAGs: DC `CRR -> CTV -> fork
 
 One job `cirJob`, one tasklet step `responseStep`; 3-tier `InitialResponseTasklet -> InitialResponseService -> data/repo` (`TxHeaderViewRepo`, `VerdictViewRepo`, both read-only view models over tables CIR does not own, grants-based R-04/R-06).
 
-- Job parameters: `arrival.id` (identifying, UUID); `route.id` (non-identifying, REQUIRED: arrival route, part of the response identity, missing/blank fails the job, A-45); `fatal.reason` (optional, forces a NACK).
+- Job parameters: `arrival.id` (identifying, UUID); `route.id` (non-identifying, REQUIRED: arrival route token matching `[a-z0-9-]+`, part of the response identity, missing/invalid fails the job, A-45); `fatal.reason` (optional, forces a NACK); `client.token` + `msg.id` (optional, headerless A-42 fallback identity); `outcome.hint` (optional, `BUSINESS_FILE_REJECTED` selects the R-41 policy NACK).
 - Happy path: `ACK|<client>|<msgId>|<accepted>/<total>|ACCEPTED_BY_DCRE` plus one `REJ|<seq>|<outcome>` line per non-PASS verdict, ordered by sequence. `client` = `tx_header.initg_pty`, counts from `tx_count`.
 - `fatal.reason` set, or zero verdict rows: single line `NACK|<client>|<msgId>|0/<total>|<reason>` (default reason `NO_VERDICTS`). ACK/NACK here means accepted/rejected by DCRE, never submitted-downstream (Fugu F11).
 - Target: `<exchange-root>/onhost-resp/<client>_<msgId>_<route>_RESP.txt` via `StagedWrite` (tmp + ATOMIC_MOVE, R-24 shape). An existing target is a completed prior emission: the rerun is a restart no-op (R-05), surfaced in the exit status message; the file path lands in the ExecutionContext as `responseFile`.

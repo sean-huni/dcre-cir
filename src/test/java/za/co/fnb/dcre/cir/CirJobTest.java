@@ -2,6 +2,7 @@ package za.co.fnb.dcre.cir;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.parameters.JobParametersBuilder;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(properties = {"spring.batch.job.enabled=false", "dcre.exchange-root=build/test-exchange"})
@@ -105,5 +107,27 @@ class CirJobTest {
         List<String> lines = Files.readAllLines(Path.of(run.getExecutionContext().getString("responseFile")));
         assertEquals(1, lines.size());
         assertTrue(lines.get(0).startsWith("NACK|FNBRF01|" + msgId + "|0/3|V1 layout"));
+    }
+
+    @Test
+    void launchWithoutRouteIdFailsClosedAndWritesNothing() throws Exception {
+        // A-45 seam-level safety: an AGT launch missing route.id must FAIL the job,
+        // never stage a response under a collision-prone identity
+        UUID arrival = UUID.randomUUID();
+        String msgId = "DCRERFNOROUTE" + arrival.toString().substring(0, 4);
+        seed(arrival, msgId, 2, List.of());
+
+        JobExecution run = jobOperator.start(cirJob, new JobParametersBuilder()
+                .addString("arrival.id", arrival.toString(), true).toJobParameters());
+
+        assertEquals(BatchStatus.FAILED, run.getStatus());
+        assertEquals(ExitStatus.FAILED.getExitCode(), run.getExitStatus().getExitCode());
+        assertFalse(run.getExecutionContext().containsKey("responseFile"),
+                "a failed launch must not advertise a response file");
+        Path respDir = Files.createDirectories(Path.of("build/test-exchange/onhost-resp"));
+        try (var responses = Files.list(respDir)) {
+            assertTrue(responses.noneMatch(p -> p.getFileName().toString().contains(msgId)),
+                    "no response file may be staged without the route identity");
+        }
     }
 }
