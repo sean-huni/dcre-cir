@@ -41,8 +41,12 @@ public class InitialResponseService {
                           String outcomeHint) throws IOException {
         Optional<TxHeaderView> maybeHeader = headers.findByArrivalId(arrivalId);
         if (maybeHeader.isEmpty()) {
-            // A-42: CRR fataled before persisting the header; identity comes from AGT job params
-            return stage(clientToken, msgId, List.of("NACK|" + clientToken + "|" + msgId + "|0/0|"
+            // A-42: CRR fataled before persisting the header; identity comes from AGT job
+            // params. A 1.x AGT sends none: fall back to UNKNOWN + arrivalId so the file
+            // name stays per-arrival unique and restart-stable (R-05 no-op semantics).
+            String client = hasText(clientToken) ? clientToken : "UNKNOWN";
+            String responseMsgId = hasText(msgId) ? msgId : arrivalId.toString();
+            return stage(client, responseMsgId, List.of("NACK|" + client + "|" + responseMsgId + "|0/0|"
                     + (fatalReason != null ? fatalReason : "NO_HEADER")));
         }
         TxHeaderView header = maybeHeader.get();
@@ -71,6 +75,10 @@ public class InitialResponseService {
             }
         }
         return stage(client, headerMsgId, lines);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private Result stage(String client, String msgId, List<String> lines) throws IOException {

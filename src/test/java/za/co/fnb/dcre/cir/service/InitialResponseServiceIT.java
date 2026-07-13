@@ -80,6 +80,25 @@ class InitialResponseServiceIT {
     }
 
     @Test
+    void headerlessArrivalsWithoutParamsFallBackToPerArrivalIdentity() throws Exception {
+        // 1.x AGT launches without client.token/msg.id: identity must fall back
+        // to UNKNOWN + arrivalId so distinct arrivals never share a response file
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+
+        var firstResult = service.respond(first, "spine truncated", null, null, null);
+        var secondResult = service.respond(second, "spine truncated", null, null, null);
+
+        assertTrue(firstResult.written());
+        assertTrue(secondResult.written(),
+                "second DISTINCT arrival must get its own response, not a StagedWrite no-op on the first's file");
+        assertEquals("NACK|UNKNOWN|" + first + "|0/0|spine truncated",
+                Files.readAllLines(firstResult.responseFile()).get(0));
+        assertEquals("NACK|UNKNOWN|" + second + "|0/0|spine truncated",
+                Files.readAllLines(secondResult.responseFile()).get(0));
+    }
+
+    @Test
     void businessFileRejectedArrivalNacksWithPolicyReasonAndRejDetail() throws Exception {
         UUID arrival = UUID.randomUUID();
         String msgId = "DCRERFPOL" + arrival.toString().substring(0, 6);
