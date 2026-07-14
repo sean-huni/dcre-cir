@@ -7,6 +7,10 @@
 # (no configured dir) rather than write a NACK to a shared/wrong directory (no legacy global dir).
 dcre:
   exchange:
+    # Activation marker mirrored from the shipped platform-batch yml: this shadow REPLACES that
+    # resource on the test classpath, so it must set the marker itself or ExchangeAutoConfiguration
+    # (@ConditionalOnProperty on dcre.exchange.enabled) backs off and the ExchangeLayout bean vanishes.
+    enabled: true
     root: ${DCRE_EXCHANGE_ROOT:build/test-exchange}
     clients:
       "[FNBCC01]":
