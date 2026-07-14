@@ -1,11 +1,13 @@
 package za.co.fnb.dcre.cir.service;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import za.co.fnb.dcre.cir.data.model.TxHeaderView;
 import za.co.fnb.dcre.cir.data.model.VerdictView;
 import za.co.fnb.dcre.cir.data.repo.TxHeaderViewRepo;
 import za.co.fnb.dcre.cir.data.repo.VerdictViewRepo;
+import za.co.fnb.dcre.platform.files.ExchangeChannel;
+import za.co.fnb.dcre.platform.files.ExchangeLayout;
+import za.co.fnb.dcre.platform.files.ExchangeSub;
 import za.co.fnb.dcre.platform.files.StagedWrite;
 
 import java.io.IOException;
@@ -32,13 +34,13 @@ public class InitialResponseService {
 
     private final TxHeaderViewRepo headers;
     private final VerdictViewRepo verdicts;
-    private final String exchangeRoot;
+    private final ExchangeLayout layout;
 
     public InitialResponseService(final TxHeaderViewRepo headers, final VerdictViewRepo verdicts,
-                                  @Value("${dcre.exchange-root}") final String exchangeRoot) {
+                                  final ExchangeLayout layout) {
         this.headers = headers;
         this.verdicts = verdicts;
-        this.exchangeRoot = exchangeRoot;
+        this.layout = layout;
     }
 
     public Result respond(final UUID arrivalId, final String route, final String fatalReason,
@@ -95,10 +97,12 @@ public class InitialResponseService {
 
     private Result stage(final String client, final String msgId, final String route,
                          final List<String> lines) throws IOException {
-        // A-45: (client, msgId) repeats across routes as distinct arrivals; the route
-        // token keeps the R-05 idempotency key aligned with the full arrival identity
-        Path target = Path.of(exchangeRoot, "onhost-resp",
-                client + "_" + msgId + "_" + route + "_RESP.txt");
+        // SCRUM-42: per-client dir <root>/<base>/onhost-resp/out; fail-closed for an
+        // unconfigured client (e.g. the A-42 "UNKNOWN" fallback has no dir, so the job fails).
+        // A-45: (client, msgId) repeats across routes as distinct arrivals; the route token
+        // keeps the R-05 idempotency key (the filename) aligned with the full arrival identity.
+        Path target = layout.resolve(client, ExchangeChannel.ONHOST_RESP, ExchangeSub.OUT)
+                .resolve("%s_%s_%s_RESP.txt".formatted(client, msgId, route));
         boolean written = StagedWrite.write(target, lines);
         return new Result(target, written);
     }
