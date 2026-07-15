@@ -1,62 +1,122 @@
 # dcre-cir
 
-Collections Initial Response Generator: OnHost-facing ACK/NACK FlatFile writer (R-30 boundary; SYNTHETIC-CONTRACT format pending the response-copybook recovery, Q-9 decoy noted). ACK = accepted-by-DCRE. StagedWrite restart no-op (R-05). CIR_BATCH_ metadata (A-39b) + A-39a sweeper. Spring Boot 4.1.0 / Spring Batch / Java 25.
+Collections Initial Responder (CIR): writes the single per-book ACK/NACK response file for one arrival into the per-client `onhost-resp/out` exchange directory. Spring Boot 4.1.0 / Spring Batch 6 / Java 25, launched by AGT as a short-lived Kubernetes Job.
 
-## Pipeline position
+## What it does
 
-Terminal per-file stage on the fork of both request DAGs: DC `CRR -> CTV -> fork {CDE || CIR}`, ENDO `CRR -> CTV -> AIS -> fork {CDE || CIR}`. AGT launches CIR as an ephemeral K8s Job for every business outcome of the upstream verdict stage (accepted AND file-fatal files get an initial response), causally independent of the `CDE -> CRW` leg. Upstream reads: CRR's `tx_header` and CTV's `validation_log`. Downstream: OnHost collects the response file; no DAG stage consumes CIR output.
+CIR is the terminal per-file response stage on the fork of both request DAGs: DC `CRR -> CTV -> fork {CDE || CIR}`, ENDO `CRR -> CTV -> AIS -> fork {CDE || CIR}`. For one arrival it reads CRR's `tx_header` and CTV's `validation_log`, composes a single ACK/NACK artifact (ACK means accepted-by-DCRE, never submitted-downstream, Fugu F11), and stages it atomically into the arrival client's `onhost-resp/out` directory for OnHost collection. AGT launches CIR as an ephemeral K8s Job for every business outcome of the upstream verdict stage (accepted AND file-fatal files get an initial response), causally independent of the `CDE -> CRW` leg; no downstream DAG stage consumes CIR output. Response format is SYNTHETIC-CONTRACT pending the response-copybook recovery (Q-9).
 
-## Job structure
+## Architecture and principles
 
-One job `cirJob`, one tasklet step `responseStep`; 3-tier `InitialResponseTasklet -> InitialResponseService -> data/repo` (`TxHeaderViewRepo`, `VerdictViewRepo`, both read-only view models over tables CIR does not own, grants-based R-04/R-06).
+- **SOLID, 3-tier**: one responsibility per tier: `InitialResponseTasklet` (thin entry adapter: params in, one service call, status out) -> `InitialResponseService` (business tier: response composition + staging) -> `data/repo` (`TxHeaderViewRepo`, `VerdictViewRepo`: read-only view models over tables CIR does not own, grants-based R-04/R-06). Layer-first packages: `config`, `service`, `data/model`, `data/repo`.
+- **12FactorApp Alignment - https://12factor.net/**: config strictly from the environment with committed working dev defaults (a clean clone runs with no `.env`), stateless one-shot process, CockroachDB and the exchange directory as attached backing resources, JVM exit code as the Batch outcome transport (`ExitCodeMain`, R-34).
+- **Idempotent restart semantics**: the response filename carries the FULL arrival identity including the route token (A-45); `StagedWrite` (tmp + `ATOMIC_MOVE`) treats an existing target as a completed prior emission, so a rerun is a restart no-op (R-05), never a duplicate. Chaos-validated kill-resume fleet-wide (2026-07-15): SIGKILL at every stage, same-identity relaunch, zero duplicates.
 
-- Job parameters: `arrival.id` (identifying, UUID); `route.id` (non-identifying, REQUIRED: arrival route token matching `[a-z0-9-]+`, part of the response identity, missing/invalid fails the job, A-45); `fatal.reason` (optional, forces a NACK); `client.token` + `msg.id` (optional, headerless A-42 fallback identity); `outcome.hint` (optional, `BUSINESS_FILE_REJECTED` selects the R-41 policy NACK).
-- Happy path: `ACK|<client>|<msgId>|<accepted>/<total>|ACCEPTED_BY_DCRE` plus one `REJ|<seq>|<outcome>` line per non-PASS verdict, ordered by sequence. `client` = `tx_header.initg_pty`, counts from `tx_count`.
-- `fatal.reason` set, or zero verdict rows: single line `NACK|<client>|<msgId>|0/<total>|<reason>` (default reason `NO_VERDICTS`). ACK/NACK here means accepted/rejected by DCRE, never submitted-downstream (Fugu F11).
-- Target: `<exchange-root>/onhost-resp/<client>_<msgId>_<route>_RESP.txt` via `StagedWrite` (tmp + ATOMIC_MOVE, R-24 shape). An existing target is a completed prior emission: the rerun is a restart no-op (R-05), surfaced in the exit status message; the file path lands in the ExecutionContext as `responseFile`.
-- Outcome seam: on COMPLETED, a `JobExecutionListener` writes `BUSINESS_ACCEPTED` to `<exchange-root>/outcomes/<JOB_NAME>` (`OutcomeFileWriter`, R-33: AGT is the sole termination authority, absence is never success). `JOB_NAME` falls back to `local-<executionId>`.
+### Job structure
 
-## Database and batch metadata
+One job `cirJob`, one tasklet step `responseStep`, wrapped in the shared `CrdbRetryExceptionHandler("CIR")`: CockroachDB 40001 commit-time serialization aborts are retried in a fresh transaction (retry, never skip).
 
-CIR writes no domain tables. Liquibase (master changelog -> `002-batch-metadata.xml` -> `batch-metadata-cir.sql`, autogenerated copy of the Spring Batch DDL) owns only the Batch metadata under prefix `CIR_BATCH_`; `spring.batch.jdbc.initialize-schema: never`. Shared `dcre_collections` DB with per-service Liquibase history tables `cir_databasechangelog` / `cir_databasechangeloglock`. An `ApplicationRunner` at `@Order(-10)` runs `StaleExecutionSweeper.abandonStale(ds, "CIR_BATCH_", 60)` before job launch, so an execution stranded in STARTED by a killed pod never blocks the relaunch with the same identity (A-39a).
+Job parameters:
 
-## Local module dependencies
+- `arrival.id` (identifying, UUID)
+- `route.id` (non-identifying, REQUIRED: arrival route token matching `[a-z0-9-]+`; part of the response identity, missing/invalid fails the job, A-45)
+- `fatal.reason` (optional, forces a NACK)
+- `client.token` + `msg.id` (optional, headerless A-42 fallback identity)
+- `outcome.hint` (optional, `BUSINESS_FILE_REJECTED` selects the R-41 policy NACK)
+
+Response lines:
+
+- Happy path: `ACK|<client>|<msgId>|<accepted>/<total>|ACCEPTED_BY_DCRE` plus one `REJ|<seq>|<outcome>` line per non-PASS verdict, ordered by sequence; `client` = `tx_header.initg_pty`, counts from `tx_count`.
+- `fatal.reason` set, or zero verdict rows: single line `NACK|<client>|<msgId>|0/<total>|<reason>` (default reason `NO_VERDICTS`).
+- `outcome.hint=BUSINESS_FILE_REJECTED`: `NACK|...|0/<total>|FILE_REJECTED_BY_POLICY` itemized with `REJ` lines (R-41 ALL_OR_NOTHING).
+- Headerless arrival (A-42, CRR fataled before persisting the header): NACK with identity from `client.token`/`msg.id` job params, reason defaulting to `NO_HEADER`.
+
+Target: `<exchange-root>/<clientBase>/onhost-resp/out/<client>_<msgId>_<route>_RESP.txt`, resolved through the `ExchangeLayout` bean (per-client directory map, SCRUM-42). Resolution fails closed for an unconfigured client, so the A-42 `UNKNOWN` fallback never writes to a shared or wrong directory. An existing target is a completed prior emission: the rerun is a restart no-op (R-05), surfaced in the exit status message; the file path lands in the ExecutionContext as `responseFile`.
+
+Outcome seam: on COMPLETED, a `JobExecutionListener` writes `BUSINESS_ACCEPTED` to `<exchange-root>/outcomes/<JOB_NAME>` (`OutcomeFileWriter`, R-33: AGT is the sole termination authority, absence is never success). `JOB_NAME` falls back to `local-<executionId>`.
+
+### Database and batch metadata
+
+CIR writes no domain tables. Liquibase (master changelog -> `2026/07/002-batch-metadata.xml` -> `batch-metadata-cir.sql`, autogenerated copy of the Spring Batch DDL) owns only the Batch metadata under prefix `CIR_BATCH_`; `spring.batch.jdbc.initialize-schema: never`. Shared `dcre_collections` DB with per-service Liquibase history tables `cir_databasechangelog` / `cir_databasechangeloglock`. An `ApplicationRunner` at `@Order(-10)` runs `StaleExecutionSweeper.abandonStale(ds, "CIR_BATCH_", 60)` before job launch, so an execution stranded in STARTED by a killed pod never blocks the relaunch with the same identity (A-39a).
+
+### Platform modules
 
 | Module | Version | Scope | Used for |
 |---|---|---|---|
 | `dcre-platform-persistence` | 0.1.0 | `implementation` | `JdbcConfig` (Spring Data JDBC base config, imported by `CirApplication`); no `BaseEntity` use, CIR writes no domain tables |
-| `dcre-platform-batch` | 0.1.0 | `implementation` | `ExitCodeMain` (R-34 exit-code wiring), `OutcomeFileWriter` (outcome seam), `StaleExecutionSweeper` (A-39a self-abandonment) |
+| `dcre-platform-batch` | 0.1.0 | `implementation` | `ExitCodeMain` (R-34), `OutcomeFileWriter` (outcome seam), `StaleExecutionSweeper` (A-39a), `CrdbRetryExceptionHandler` (40001 retry), shared `dcre-exchange-layout.yml` classpath resource (drives the `ExchangeLayout` bean via `spring.config.import`) |
 
-`StagedWrite` (the atomic response-file write) comes from `dcre-platform-files`, not declared directly: it arrives transitively via `dcre-platform-batch`'s `api` chain (batch brings files brings model). All artifacts resolve from Maven Local only (no remote repository): run `./gradlew publishToMavenLocal` in each dependency repo first, publish chain `dcre-platform-model` -> `dcre-platform-files` -> `dcre-platform-batch`; `dcre-platform-persistence` is standalone. Details in each module repo's README under "Publishing".
+`StagedWrite` and `ExchangeLayout` come from `dcre-platform-files`, not declared directly: they arrive transitively via `dcre-platform-batch`'s `api` chain (batch brings files brings model). All platform artifacts resolve from Maven Local only.
+
+No metrics wiring yet (no Actuator/Micrometer dependency): logs, the outcome seam file, and `CIR_BATCH_` metadata are the operational sources of truth.
+
+## Prerequisites
+
+- Java 25 (Gradle toolchain; Gradle 9.5.1 wrapper committed)
+- Docker (Testcontainers in the test suite, container image build)
+- Platform libs `za.co.fnb.dcre:platform-*:0.1.0` published to Maven Local (see Quickstart)
+- At runtime: a reachable CockroachDB and the exchange directory tree (`dcre-infra` locally)
+
+## Quickstart
+
+```bash
+# 1. Publish the platform libs to Maven Local: run in each platform repo clone,
+#    chain order dcre-platform-model -> dcre-platform-files -> dcre-platform-batch;
+#    dcre-platform-persistence is standalone.
+./gradlew publishToMavenLocal
+
+# 2. Build + test this repo (Docker required for Testcontainers)
+./gradlew build
+
+# 3. Run one-shot against local defaults (CockroachDB on localhost:26257, dcre-infra exchange)
+java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req                      # ACK path
+java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req 'fatal.reason=<why>' # NACK path
+```
+
+A clean clone runs with NO `.env`: working dev defaults are committed in `application.yml`.
 
 ## Configuration
 
-12FactorApp: committed working dev defaults, env overrides, clean clone runs with no `.env`.
+Precedence: committed yml default < environment variable. The per-client exchange directory map itself ships as the `dcre-exchange-layout.yml` classpath resource in `dcre-platform-batch`.
 
-| Env | Default | Use |
+| Env | Default | Purpose |
 |---|---|---|
 | `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_collections?sslmode=disable` | CockroachDB via pgwire |
 | `DCRE_DB_USER` / `DCRE_DB_PASSWORD` | `root` / empty | DB credentials |
-| `DCRE_EXCHANGE_ROOT` | `../../infra/dcre-infra/exchange` | Response dir + outcome seam |
+| `DCRE_EXCHANGE_ROOT` | `../../../../../infra/dcre-infra/exchange` | Exchange root: per-client response dirs + outcome seam |
 | `DCRE_AMOUNT_SCALE` | `2` | Fleet-wide flag; not read by CIR sources |
 | `JOB_NAME` | `local-<executionId>` | K8s-injected identity for the outcome seam |
 
-## Build and test
-
-`./gradlew build` (Gradle 9.5.1 wrapper, Java 25 toolchain). Platform libs resolve from mavenLocal (see Local module dependencies). `./gradlew test`: Testcontainers CockroachDB v26.2.3, covering ACK with REJ details plus restart no-op (R-05: rerun never rewrites the file) and the file-fatal NACK path.
-
-## Run
-
-One-shot batch process; the JVM exit code carries the Batch outcome (`ExitCodeMain`, R-34).
+## Testing
 
 ```bash
-./gradlew build
-java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req            # ACK path
-java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req 'fatal.reason=<why>'  # NACK path
+./gradlew test
 ```
 
-Container: `docker build -t dcre-cir:dev .` (eclipse-temurin:25-jre-alpine). In the cluster AGT launches the image as an ephemeral K8s Job with `JOB_NAME` and the identifying parameters; the JobRepository dedupes on them (restart-not-duplicate, R-16 family). Requires a reachable CockroachDB and the exchange directory (`dcre-infra` compose stack locally).
+Docker required: Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`. Coverage:
 
-## Observability
+- `CirJobTest`: ACK with REJ details plus restart no-op (R-05: rerun never rewrites the file), file-fatal NACK path.
+- `InitialResponseServiceIT`: headerless A-42 NACKs (`NO_HEADER`, fail-closed without `client.token`), R-41 policy NACK, distinct responses for the same (client, msgId) on different routes, missing/invalid `route.id` fail-closed (A-45).
+- `CirJobConfigRetryTest`: the real `responseStep` retries commit-time 40001 aborts in a fresh transaction.
+- Cucumber BDD suite (`CucumberSuiteTest`, `features/cir_initial_response.feature`): full-accept ACK, per-record rejections, file-fatal NACK, `NO_VERDICTS` NACK, rerun-unchanged scenarios against the real job + CockroachDB.
 
-No metrics wiring yet (no actuator/Micrometer dependency); logs only. The outcome seam file plus `CIR_BATCH_` metadata are the operational sources of truth.
+## Local cluster deployment
+
+```bash
+# once: kind cluster dcre-dev + CRDB + exchange hostPath (in dcre-infra)
+scripts/kind-up.sh
+
+# this repo: build image and load it into the cluster
+./gradlew bootJar
+docker build -t dcre-cir:TAG .
+kind load docker-image --name dcre-dev dcre-cir:TAG
+```
+
+Image base: `eclipse-temurin:25-jre-alpine`. In the cluster AGT mints CIR as an ephemeral K8s Job with `JOB_NAME` and the identifying parameters; the JobRepository dedupes on them (restart-not-duplicate). Fleet releases are digits-only 3-component SemVer git tags, uniform across the fleet (current `2.1.1`); `scripts/switch-version.sh VERSION` in `dcre-infra` switches the fleet, `scripts/env-reset.sh` resets to a clean slate.
+
+## Related repositories
+
+- Orchestrator: [dcre-agt](https://github.com/sean-huni/dcre-agt)
+- Stage services: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde), [dcre-crw](https://github.com/sean-huni/dcre-crw), [dcre-ixr](https://github.com/sean-huni/dcre-ixr), [dcre-sxr](https://github.com/sean-huni/dcre-sxr), [dcre-pxr](https://github.com/sean-huni/dcre-pxr), [dcre-prg](https://github.com/sean-huni/dcre-prg), [dcre-ais](https://github.com/sean-huni/dcre-ais), [dcre-hcs](https://github.com/sean-huni/dcre-hcs)
+- Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence)
+- Infra and tooling: [dcre-infra](https://github.com/sean-huni/dcre-infra), [dcre-fixture-toolkit](https://github.com/sean-huni/dcre-fixture-toolkit), [dcre-design-register](https://github.com/sean-huni/dcre-design-register), [dcre-rpt](https://github.com/sean-huni/dcre-rpt)
