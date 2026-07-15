@@ -69,8 +69,8 @@ No metrics wiring yet (no Actuator/Micrometer dependency): logs, the outcome sea
 ./gradlew build
 
 # 3. Run one-shot against local defaults (CockroachDB on localhost:26257, dcre-infra exchange)
-java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req                      # ACK path
-java -jar build/libs/cir-2.0.1.jar arrival.id=<uuid> route.id=onhost-req 'fatal.reason=<why>' # NACK path
+java -jar build/libs/cir-2.0.1.jar 'arrival.id=<uuid>' route.id=onhost-req                      # ACK path
+java -jar build/libs/cir-2.0.1.jar 'arrival.id=<uuid>' route.id=onhost-req 'fatal.reason=<why>' # NACK path
 ```
 
 A clean clone runs with NO `.env`: working dev defaults are committed in `application.yml`.
