@@ -33,6 +33,12 @@ Feature: CIR initial response back to the OnHost client
     When the initial response job runs
     Then the response file is a NACK for 4 transactions citing "NO_VERDICTS"
 
+  Scenario: The staged response filename is durably recorded in the cir_response ledger
+    Given an arrival of 5 collection requests that all passed validation
+    When the initial response job runs
+    Then the response file acknowledges 5 of 5 transactions
+    And the response filename is recorded in cir_response as an ACK of 5 of 5
+
   Scenario: Re-running the response job never rewrites an existing response
     Given an arrival of 5 collection requests where the first records failed validation as:
       | outcome                |
