@@ -35,6 +35,10 @@ public class InitialResponseService {
     // cir_response.reason column width (spec 1.2 / 11.2): free-text reasons are clipped to fit.
     private static final int REASON_MAX = 64;
 
+    // cir_response.client column width (003-cir-response.xml). Its source, tx_header.initg_pty, is
+    // VARCHAR(35): an over-length client identity fails closed (identity is never clipped — see stage()).
+    private static final int CLIENT_MAX = 16;
+
     /** The ACK/NACK outcome plus the acceptance ratio and NACK reason captured into cir_response. */
     private record Decision(String outcome, String reason, Integer acceptedCount, Integer totalCount) { }
 
@@ -112,6 +116,16 @@ public class InitialResponseService {
 
     private Result stage(final UUID arrivalId, final String client, final String msgId, final String route,
                          final List<String> lines, final Decision decision) throws IOException {
+        // M2 fail-closed: cir_response.client is VARCHAR(16) but its source tx_header.initg_pty is
+        // VARCHAR(35). An over-length client identity is an upstream contract violation; reject it
+        // with a readable business message BEFORE the write-ahead insert (consistent with the
+        // fail-closed-on-unconfigured-client posture) so it never surfaces as a raw CRDB "value too
+        // long for type varchar(16)" that kills the job. Identity is NEVER clipped (unlike reason);
+        // this only guards the column width and does NOT resolve A-43 (canonical client-token source).
+        if (client.length() > CLIENT_MAX) {
+            throw new IllegalStateException(
+                    "cir_response.client identity exceeds %d chars: %s".formatted(CLIENT_MAX, client));
+        }
         // SCRUM-42: per-client dir <root>/<base>/onhost-resp/out; fail-closed for an
         // unconfigured client (e.g. the A-42 "UNKNOWN" fallback has no dir, so the job fails).
         // A-45: (client, msgId) repeats across routes as distinct arrivals; the route token

@@ -181,6 +181,35 @@ class CirResponseCaptureIT {
     }
 
     @Test
+    void overlongClientIdentityFailsClosedWritingNeitherRowNorFile() {
+        // M2: cir_response.client is VARCHAR(16) but its source tx_header.initg_pty is VARCHAR(35).
+        // An over-length client identity must fail closed with a readable business message BEFORE the
+        // write-ahead INSERT, not surface as a raw CRDB "value too long for type varchar(16)" that
+        // kills the job. Identity is NEVER clipped (unlike reason); this only guards the column width.
+        UUID arrival = UUID.randomUUID();
+        String msgId = "DCRERFWIDE" + arrival.toString().substring(0, 5);
+        String overlongClient = "LONGINITIATINGPARTY01";   // 21 chars: > client(16), <= initg_pty(35)
+        assertTrue(overlongClient.length() > 16 && overlongClient.length() <= 35,
+                "fixture must exceed the client column width but fit initg_pty");
+        // A CONFIGURED client (see dcre-exchange-layout.yml), so layout.resolve succeeds and the
+        // failure can only come from the width guard, not from an unconfigured-client fail-closed.
+        jdbc.update("UPSERT INTO tx_header (arrival_id, msg_id, initg_pty, tx_count) VALUES (?,?,?,?)",
+                arrival, msgId, overlongClient, 2);
+        jdbc.update("UPSERT INTO validation_log (arrival_id, sequence, outcome) VALUES (?,?,?)",
+                arrival, 1, "PASS");
+        jdbc.update("UPSERT INTO validation_log (arrival_id, sequence, outcome) VALUES (?,?,?)",
+                arrival, 2, "PASS");
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class,
+                () -> service.respond(arrival, "onhost-req", null, overlongClient, msgId, null),
+                "an over-length client identity fails closed, not with a raw SQLException");
+        assertTrue(ex.getMessage().contains("cir_response.client identity exceeds 16 chars"),
+                "the fail-closed message names the offending column and width, not a SQL error");
+        assertEquals(0L, jdbc.queryForObject("SELECT count(*) FROM cir_response WHERE arrival_id=?",
+                Long.class, arrival), "an over-length client identity writes no ledger row");
+    }
+
+    @Test
     void failClosedUnknownClientWritesNeitherRowNorFile() {
         // Invariant: resolve BEFORE capture, so a fail-closed config error leaves no phantom row.
         UUID arrival = UUID.randomUUID();   // no header AND no client.token -> UNKNOWN, no exchange dir
