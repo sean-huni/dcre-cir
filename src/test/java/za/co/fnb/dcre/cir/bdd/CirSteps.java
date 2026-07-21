@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -117,6 +118,19 @@ public class CirSteps {
         List<String> lines = responseLines();
         assertEquals(1, lines.size(), "a NACK carries a single line");
         assertEquals("NACK|FNBRF01|" + msgId + "|0/" + total + "|" + reason, lines.get(0));
+    }
+
+    @Then("the response filename is recorded in cir_response as an ACK of {int} of {int}")
+    public void ledgerRecordsResponse(int accepted, int total) {
+        // SCRUM-58: after a COMPLETED job the ledger is the system of record for the filename.
+        Map<String, Object> row = jdbc.queryForMap("SELECT outcome, file_name, accepted_count,"
+                + " total_count, written_at FROM cir_response WHERE arrival_id=?", arrival);
+        assertEquals("ACK", row.get("outcome"));
+        assertEquals(responseFile().getFileName().toString(), row.get("file_name"),
+                "the ledger records the staged response basename");
+        assertEquals(accepted, ((Number) row.get("accepted_count")).intValue());
+        assertEquals(total, ((Number) row.get("total_count")).intValue());
+        assertNotNull(row.get("written_at"), "written_at is stamped after the file write");
     }
 
     @Then("the response file on disk is unchanged")

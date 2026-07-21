@@ -1,10 +1,7 @@
 package za.co.fnb.dcre.cir.config;
 
-import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.job.Job;
-import org.springframework.batch.core.job.JobExecution;
 import org.springframework.batch.core.job.builder.JobBuilder;
-import org.springframework.batch.core.listener.JobExecutionListener;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.Step;
 import org.springframework.batch.core.step.builder.StepBuilder;
@@ -16,11 +13,10 @@ import org.springframework.core.annotation.Order;
 import org.springframework.transaction.PlatformTransactionManager;
 import za.co.fnb.dcre.cir.service.InitialResponseTasklet;
 import za.co.fnb.dcre.platform.batch.CrdbRetryExceptionHandler;
-import za.co.fnb.dcre.platform.batch.OutcomeFileWriter;
+import za.co.fnb.dcre.platform.batch.OutcomeSeamListener;
 import za.co.fnb.dcre.platform.batch.StaleExecutionSweeper;
 
 import javax.sql.DataSource;
-import java.nio.file.Path;
 
 @Configuration
 public class CirJobConfig {
@@ -36,8 +32,12 @@ public class CirJobConfig {
                 .tasklet(tasklet, tx)
                 .exceptionHandler(new CrdbRetryExceptionHandler("CIR"))
                 .build();
+        // SCRUM-58: shared platform-batch seam listener replaces the inline record; COMPLETED gate
+        // and constant BUSINESS_ACCEPTED verdict unchanged, the dev fallback name upgrades to the
+        // self-describing local-cir-<executionId>. cir_response is captured on the respond path
+        // (per-arrival), not here, so this listener carries no persistence hook.
         return new JobBuilder("cirJob", repo)
-                .listener(new SeamListener(exchangeRoot))
+                .listener(new OutcomeSeamListener("cir", exchangeRoot, execution -> "BUSINESS_ACCEPTED"))
                 .start(responseStep)
                 .build();
     }
@@ -46,17 +46,5 @@ public class CirJobConfig {
     @Order(-10)
     public ApplicationRunner staleExecutionSweep(DataSource dataSource) {
         return args -> StaleExecutionSweeper.abandonStale(dataSource, "CIR_BATCH_", 60);
-    }
-
-    record SeamListener(String exchangeRoot) implements JobExecutionListener {
-
-        @Override
-        public void afterJob(JobExecution execution) {
-            if (execution.getStatus() != BatchStatus.COMPLETED) {
-                return;
-            }
-            String jobName = System.getenv().getOrDefault("JOB_NAME", "local-" + execution.getId());
-            OutcomeFileWriter.write(Path.of(exchangeRoot), jobName, "BUSINESS_ACCEPTED");
-        }
     }
 }

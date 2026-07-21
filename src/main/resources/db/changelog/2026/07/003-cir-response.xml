@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- SCRUM-58 file-trace: cir_response is CIR's first domain table and the write-ahead
+         filename ledger / system of record for every initial ACK/NACK. One row per arrival,
+         committed BEFORE the response file is staged. route_id IS part of identity (A-45
+         cross-route twin lesson): the same (client, msgId) on onhost-req vs onhost-req-endo are
+         distinct arrivals with distinct files. reason closes A-48 (the headerless NACK reason was
+         never persisted); accepted_count/total_count give the per-file acceptance ratio at a
+         glance (spec 11.2 Tier-1). written_at NULL after commit = staged-not-written stuck signal.
+         MARK_RAN tableExists guard keeps the additive create re-run-safe on already-migrated
+         databases (persistence.md changeset-identity rule). -->
+    <changeSet id="003-cir-response-cir" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="cir_response"/></not>
+        </preConditions>
+        <createTable tableName="cir_response">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="arrival_id" type="UUID">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uq_cir_response_arrival"/>
+            </column>
+            <column name="client" type="VARCHAR(16)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="msg_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="route_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="outcome" type="VARCHAR(4)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="file_name" type="VARCHAR(512)">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uq_cir_response_file"/>
+            </column>
+            <column name="reason" type="VARCHAR(64)"/>
+            <column name="accepted_count" type="INT"/>
+            <column name="total_count" type="INT"/>
+            <column name="written_at" type="TIMESTAMPTZ"/>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="cir_response"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>
