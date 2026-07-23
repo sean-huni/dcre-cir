@@ -18,6 +18,7 @@ import org.springframework.batch.infrastructure.support.transaction.Resourceless
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.transaction.support.DefaultTransactionStatus;
 import za.co.fnb.dcre.cir.service.InitialResponseTasklet;
+import za.co.fnb.dcre.platform.batch.HeartbeatWriter;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -65,8 +66,11 @@ class CirJobConfigRetryTest {
             }
         };
         final var repo = new ResourcelessJobRepository();
-        final Job job = new CirJobConfig()
-                .cirJob(repo, new CommitFailingTxManager(2), tasklet, "build/test-exchange");
+        // SCRUM-88: the job now also registers a HeartbeatWriter listener; this unit test drives
+        // the STEP directly (never the job lifecycle), so a no-op writer (null datasource, no
+        // JOB_NAME) satisfies the signature without touching the retry behaviour under test.
+        final Job job = new CirJobConfig().cirJob(repo, new CommitFailingTxManager(2), tasklet,
+                new HeartbeatWriter(null, null, null), "build/test-exchange");
         final Step step = ((StepLocator) job).getStep("responseStep");
 
         final JobInstance instance = repo.createJobInstance("retryWiringJob", new JobParameters());
