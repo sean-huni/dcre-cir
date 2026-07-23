@@ -13,6 +13,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.transaction.PlatformTransactionManager;
 import za.co.fnb.dcre.cir.service.InitialResponseTasklet;
 import za.co.fnb.dcre.platform.batch.CrdbRetryExceptionHandler;
+import za.co.fnb.dcre.platform.batch.HeartbeatWriter;
 import za.co.fnb.dcre.platform.batch.OutcomeSeamListener;
 import za.co.fnb.dcre.platform.batch.StaleExecutionSweeper;
 
@@ -23,7 +24,7 @@ public class CirJobConfig {
 
     @Bean
     public Job cirJob(final JobRepository repo, final PlatformTransactionManager tx,
-                      final InitialResponseTasklet tasklet,
+                      final InitialResponseTasklet tasklet, final HeartbeatWriter heartbeatWriter,
                       @Value("${dcre.exchange-root}") final String exchangeRoot) {
         // SCRUM-42: the respond step WRITES the response ledger + idempotent staging concurrent
         // with the fleet's heavy writers; CRDB 40001 commit-time aborts are normal under
@@ -36,8 +37,12 @@ public class CirJobConfig {
         // and constant BUSINESS_ACCEPTED verdict unchanged, the dev fallback name upgrades to the
         // self-describing local-cir-<executionId>. cir_response is captured on the respond path
         // (per-arrival), not here, so this listener carries no persistence hook.
+        // SCRUM-88 (M12): the HeartbeatWriter is a JobExecutionListener but Batch 6 does not
+        // auto-apply listener beans; register it explicitly so it stamps agt_ops liveness while
+        // this job runs, chained after the outcome seam listener.
         return new JobBuilder("cirJob", repo)
                 .listener(new OutcomeSeamListener("cir", exchangeRoot, execution -> "BUSINESS_ACCEPTED"))
+                .listener(heartbeatWriter)
                 .start(responseStep)
                 .build();
     }
