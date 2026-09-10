@@ -5,19 +5,33 @@
         xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
         http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
 
-    <!-- SCRUM-58 file-trace: cir_response is CIR's first domain table and the write-ahead
-         filename ledger / system of record for every initial ACK/NACK. One row per arrival,
-         committed BEFORE the response file is staged. route_id IS part of identity (A-45
-         cross-route twin lesson): the same (client, msgId) on onhost-req vs onhost-req-endo are
-         distinct arrivals with distinct files. reason closes A-48 (the headerless NACK reason was
-         never persisted); accepted_count/total_count give the per-file acceptance ratio at a
-         glance (spec 11.2 Tier-1). written_at NULL after commit = staged-not-written stuck signal.
-         MARK_RAN tableExists guard keeps the additive create re-run-safe on already-migrated
-         databases (persistence.md changeset-identity rule). -->
-    <changeSet id="003-cir-response-cir" author="dcre">
-        <preConditions onFail="MARK_RAN">
-            <not><tableExists tableName="cir_response"/></not>
-        </preConditions>
+    <!-- ============================================================================
+         CIR v1 BASELINE, part 2 of 2: the CIR domain schema.
+
+         THIS IS THE VERSION 1 BASELINE. The database is dropped and recreated at the
+         v1 cutover, so this runs only against an empty schema. The onFail="MARK_RAN"
+         tableExists guard the previous revision carried is deliberately absent: it
+         protected an additive create on an already-migrated database, and there is no
+         longer any such database. Keeping it would leave a guard that cannot fire but
+         that WOULD silently skip the create if the table were ever present for a
+         reason nobody intended, turning a loud failure into a missing table.
+
+         CIR is the only writer of cir_response (R-04). One row per arrival, committed
+         BEFORE the response file is staged, so this table is the write-ahead filename
+         ledger and system of record for every initial ACK/NACK.
+
+         route_id IS part of identity (A-45, the cross-route twin lesson): the same
+         (client, msg_id) arriving on onhost-req versus onhost-req-endo are distinct
+         arrivals with distinct files, and an idempotency key narrower than the full
+         business identity silently swallows one of them.
+
+         reason closes A-48 (the headerless NACK reason was never persisted).
+         accepted_count / total_count give the per-file acceptance ratio at a glance
+         (spec 11.2 Tier-1). written_at still NULL after commit is the
+         staged-but-not-written stuck signal.
+         ============================================================================ -->
+
+    <changeSet id="cir-v1-cir-response" author="dcre">
         <createTable tableName="cir_response">
             <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
                 <constraints primaryKey="true" nullable="false"/>
