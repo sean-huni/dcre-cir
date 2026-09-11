@@ -32,6 +32,10 @@
          ============================================================================ -->
 
     <changeSet id="cir-v1-cir-response" author="dcre">
+        <preConditions onFail="MARK_RAN">
+            <not><tableExists tableName="cir_response"/></not>
+        </preConditions>
+        
         <createTable tableName="cir_response">
             <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
                 <constraints primaryKey="true" nullable="false"/>
